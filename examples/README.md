@@ -33,10 +33,11 @@ To test the decoder, make sure you have installed ```onnxruntime``` and run the 
 
 ```bash
 python -m examples.onnx_example \
-  --input_text "My name is Andy. I'm 25 and I just moved to London. The underground is pretty confusing, but it gets me around in no time at all." \
-  --ref_codes samples/jo.pt \
-  --ref_text samples/jo.txt \
-  --backbone neuphonic/neutts-nano-q4-gguf
+  --input_text "State-of-the-art Voice AI has been locked behind web APIs for too long. NeuTTS Air is the world’s first super-realistic, on-device, TTS speech language model with instant voice cloning." \
+  --ref_codes samples/plat.pt \
+  --ref_text samples/plat.txt \
+  --backbone_device gpu \
+  --backbone "./neuphonic/neutts-air-Q8_0.gguf"
 ```
 
 ### Streaming Support
@@ -50,3 +51,5 @@ python -m examples.basic_streaming_example \
   --ref_text samples/jo.txt \
   --backbone neuphonic/neutts-nano-q4-gguf
 ```
+
+python -m examples.basic_streaming_example --input_text "State-of-the-art Voice AI has been locked behind web APIs for too long. NeuTTS Air is the world’s first super-realistic, on-device, TTS speech language model with instant voice cloning." --ref_codes samples/plat.pt --ref_text samples/plat.txt --backbone_device gpu --backbone "./neuphonic/neutts-air-Q8_0.gguf" --backbone_device gpu

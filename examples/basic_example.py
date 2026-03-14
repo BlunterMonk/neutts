@@ -4,7 +4,16 @@ from neutts import NeuTTS
 import torch
 
 
-def main(input_text, ref_audio_path, ref_text, backbone, output_path="output.wav"):
+def main(
+    input_text,
+    ref_audio_path,
+    ref_text,
+    backbone,
+    backbone_device="cpu",
+    codec_device="cpu",
+    language=None,
+    output_path="output.wav",
+):
     if not ref_audio_path or not ref_text:
         print("No reference audio or text provided.")
         return None
@@ -12,9 +21,10 @@ def main(input_text, ref_audio_path, ref_text, backbone, output_path="output.wav
     # Initialize NeuTTS with the desired model and codec
     tts = NeuTTS(
         backbone_repo=backbone,
-        backbone_device="cpu",
+        backbone_device=backbone_device,
         codec_repo="neuphonic/neucodec",
-        codec_device="cpu",
+        codec_device=codec_device,
+        language=language,
     )
 
     # Check if ref_text is a path if it is read it if not just return string
@@ -67,7 +77,27 @@ if __name__ == "__main__":
         "--backbone",
         type=str,
         default="neuphonic/neutts-nano",
-        help="Huggingface repo containing the backbone checkpoint",
+        help="Huggingface repo or local path to the backbone checkpoint",
+    )
+    parser.add_argument(
+        "--backbone_device",
+        type=str,
+        default="cpu",
+        choices=["cpu", "gpu"],
+        help="Device for backbone inference",
+    )
+    parser.add_argument(
+        "--codec_device",
+        type=str,
+        default="cpu",
+        choices=["cpu", "gpu"],
+        help="Device for codec inference",
+    )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default=None,
+        help="eSpeak language code (e.g. 'en', 'fr'). Required when using a local .gguf file path.",
     )
     args = parser.parse_args()
     main(
@@ -75,5 +105,8 @@ if __name__ == "__main__":
         ref_audio_path=args.ref_audio,
         ref_text=args.ref_text,
         backbone=args.backbone,
+        backbone_device=args.backbone_device,
+        codec_device=args.codec_device,
+        language=args.language,
         output_path=args.output_path,
     )

@@ -1,0 +1,16 @@
+services:
+  neutts-server:
+    build: .
+    ports:
+      - "9100:9100"
+    volumes:
+      - voices:/voices
+      - hf-cache:/root/.cache/huggingface
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+    # Override the default backbone / language here:
+    # command: ["--backbone", "neuphonic/neutts-nano-q4-gguf", "--language", "de", "--host", "0.0.0.0", "--port", "9100", "--voices-dir", "/voices"]
+
+volumes:
+  voices:
+  hf-cache:

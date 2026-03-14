@@ -47,27 +47,19 @@ def audio_player_thread(audio_queue, stream, prefill_chunks=0):
         audio_queue.task_done()
 
 
-def main(input_text, ref_codes_path, ref_text, backbone):
+def main(input_text, ref_codes_path, ref_text, backbone, backbone_device="cpu", codec_device="cpu", language=None):
 
-    assert backbone in [
-        "neuphonic/neutts-air-q4-gguf",
-        "neuphonic/neutts-air-q8-gguf",
-        "neuphonic/neutts-nano-q4-gguf",
-        "neuphonic/neutts-nano-q8-gguf",
-        "neuphonic/neutts-nano-french-q4-gguf",
-        "neuphonic/neutts-nano-french-q8-gguf",
-        "neuphonic/neutts-nano-spanish-q4-gguf",
-        "neuphonic/neutts-nano-spanish-q8-gguf",
-        "neuphonic/neutts-nano-german-q4-gguf",
-        "neuphonic/neutts-nano-german-q8-gguf",
-    ], "Must be a GGUF ckpt as streaming is only currently supported by llama-cpp."
+    if not backbone.endswith("gguf") and not backbone.endswith(".gguf"):
+        raise ValueError("Backbone must be a GGUF checkpoint (repo ending in 'gguf' or a .gguf file path), "
+                         "as streaming is only supported by llama-cpp.")
 
     # Initialize NeuTTS with the desired model and codec
     tts = NeuTTS(
         backbone_repo=backbone,
-        backbone_device="cpu",
+        backbone_device=backbone_device,
         codec_repo="neuphonic/neucodec-onnx-decoder",
-        codec_device="cpu",
+        codec_device=codec_device,
+        language=language,
     )
 
     input_text = _read_if_path(input_text)
@@ -184,7 +176,27 @@ if __name__ == "__main__":
         "--backbone",
         type=str,
         default="neuphonic/neutts-nano-q8-gguf",
-        help="Huggingface repo containing the backbone checkpoint. Must be GGUF.",
+        help="Huggingface repo or local path to a GGUF backbone checkpoint",
+    )
+    parser.add_argument(
+        "--backbone_device",
+        type=str,
+        default="cpu",
+        choices=["cpu", "gpu"],
+        help="Device for backbone inference",
+    )
+    parser.add_argument(
+        "--codec_device",
+        type=str,
+        default="cpu",
+        choices=["cpu", "gpu"],
+        help="Device for codec inference",
+    )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default=None,
+        help="eSpeak language code (e.g. 'en', 'fr'). Required when using a local .gguf file path.",
     )
     args = parser.parse_args()
     main(
@@ -192,4 +204,7 @@ if __name__ == "__main__":
         ref_codes_path=args.ref_codes,
         ref_text=args.ref_text,
         backbone=args.backbone,
+        backbone_device=args.backbone_device,
+        codec_device=args.codec_device,
+        language=args.language,
     )

@@ -87,6 +87,8 @@ class NeuTTS:
         self.streaming_lookforward = 5
         self.streaming_lookback = 50
         self.streaming_stride_samples = self.streaming_frames_per_chunk * self.hop_length
+        self.min_tokens_per_word = 12  # conservative floor: ~20 tokens/word at normal pace
+        self.min_new_tokens_floor = 50
 
         # ggml & onnx flags
         self._is_quantized_model = False
@@ -95,7 +97,9 @@ class NeuTTS:
         # HF tokenizer
         self.tokenizer = None
 
-        # Load phonemizer + models
+        # Load text normalizer + phonemizer + models
+        self._load_text_normalizer(language, backbone_repo)
+
         print("Loading phonemizer...")
         self._load_phonemizer(language, backbone_repo)
 
@@ -115,6 +119,36 @@ class NeuTTS:
                 "Install with: pip install perth>=0.2.0"
             )
             self.watermarker = None
+
+    # espeak language code -> nemo normalizer language code
+    _NEMO_LANG_MAP = {
+        "en-us": "en",
+        "de": "de",
+        "fr-fr": "fr",
+        "es": "es",
+    }
+
+    def _load_text_normalizer(self, language, backbone_repo):
+        language = language or BACKBONE_LANGUAGE_MAP.get(backbone_repo)
+        nemo_lang = self._NEMO_LANG_MAP.get(language)
+
+        try:
+            from nemo_text_processing.text_normalization.normalize import Normalizer
+
+            print(f"Loading text normalizer for '{nemo_lang}'...")
+            self.text_normalizer = Normalizer(input_case="cased", lang=nemo_lang)
+        except (ImportError, Exception) as e:
+            warnings.warn(
+                f"Text normalization unavailable: {e}. "
+                "Dates, numbers, and abbreviations will not be expanded. "
+                "Install with: pip install nemo_text_processing"
+            )
+            self.text_normalizer = None
+
+    def _normalize_text(self, text: str) -> str:
+        if self.text_normalizer is None:
+            return text
+        return self.text_normalizer.normalize(text)
 
     def _load_phonemizer(self, language, backbone_repo):
         if not language:
@@ -224,6 +258,52 @@ class NeuTTS:
                     " 'neuphonic/neucodec-onnx-decoder'."
                 )
 
+    @staticmethod
+    def _sanitize_text(text: str) -> str:
+        """Strip non-speakable content from text."""
+        # Remove fenced code blocks (``` ... ```)
+        text = re.sub(r"```[\s\S]*?```", "", text)
+        # Remove inline code (`...`)
+        text = re.sub(r"`[^`]+`", "", text)
+        # Remove URLs
+        text = re.sub(r"https?://\S+", "", text)
+        # Remove markdown images ![alt](url)
+        text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
+        # Convert markdown links [text](url) to just text
+        text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+        # Remove markdown headings (# ## ### etc.)
+        text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+        # Remove markdown bold/italic markers
+        text = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", text)
+        text = re.sub(r"_{1,3}([^_]+)_{1,3}", r"\1", text)
+        # Remove HTML tags
+        text = re.sub(r"<[^>]+>", "", text)
+        # Remove emoji (unicode emoji blocks)
+        text = re.sub(
+            r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
+            r"\U0001F1E0-\U0001F1FF\U00002700-\U000027BF\U0001F900-\U0001F9FF"
+            r"\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002600-\U000026FF]+",
+            "",
+            text,
+        )
+        # Collapse repeated punctuation (!!!, ..., ???) to single
+        text = re.sub(r"([.!?]){2,}", r"\1", text)
+        # Remove bullet/list markers (-, *, •) at line starts
+        text = re.sub(r"^\s*[-*•]\s+", "", text, flags=re.MULTILINE)
+        # Remove numbered list markers (1. 2. etc.) at line starts
+        text = re.sub(r"^\s*\d+\.\s+", "", text, flags=re.MULTILINE)
+        # Collapse whitespace
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    @staticmethod
+    def _segment_text(text: str) -> list[str]:
+        """Split text into sentences at .!? boundaries, preserving punctuation."""
+        # Split on sentence-ending punctuation followed by whitespace or end of string.
+        # Keeps the delimiter attached to the preceding segment.
+        raw = re.split(r"(?<=[.!?])\s+", text.strip())
+        return [s.strip() for s in raw if s.strip()]
+
     def infer(self, text: str, ref_codes: np.ndarray | torch.Tensor, ref_text: str) -> np.ndarray:
         """
         Perform inference to generate speech from text using the TTS model and reference audio.
@@ -235,23 +315,24 @@ class NeuTTS:
         Returns:
             np.ndarray: Generated speech waveform.
         """
+        text = self._sanitize_text(text)
+        text = self._normalize_text(text)
+        segments = self._segment_text(text)
+        wavs = []
 
-        # Generate tokens
-        if self._is_quantized_model:
-            output_str = self._infer_ggml(ref_codes, ref_text, text)
-        else:
-            prompt_ids = self._apply_chat_template(ref_codes, ref_text, text)
-            output_str = self._infer_torch(prompt_ids)
+        for segment in segments:
+            if self._is_quantized_model:
+                output_str = self._infer_ggml(ref_codes, ref_text, segment)
+            else:
+                prompt_ids = self._apply_chat_template(ref_codes, ref_text, segment)
+                output_str = self._infer_torch(prompt_ids)
 
-        # Decode
-        wav = self._decode(output_str)
-        watermarked_wav = (
-            wav
-            if self.watermarker is None
-            else self.watermarker.apply_watermark(wav, sample_rate=24_000)
-        )
+            wav = self._decode(output_str)
+            if self.watermarker is not None:
+                wav = self.watermarker.apply_watermark(wav, sample_rate=24_000)
+            wavs.append(wav)
 
-        return watermarked_wav
+        return np.concatenate(wavs)
 
     def infer_stream(
         self, text: str, ref_codes: np.ndarray | torch.Tensor, ref_text: str
@@ -267,12 +348,14 @@ class NeuTTS:
         Yields:
             np.ndarray: Generated speech waveform.
         """
-
-        if self._is_quantized_model:
-            return self._infer_stream_ggml(ref_codes, ref_text, text)
-
-        else:
+        if not self._is_quantized_model:
             raise NotImplementedError("Streaming is not implemented for the torch backend!")
+
+        text = self._sanitize_text(text)
+        text = self._normalize_text(text)
+        segments = self._segment_text(text)
+        for segment in segments:
+            yield from self._infer_stream_ggml(ref_codes, ref_text, segment)
 
     def encode_reference(self, ref_audio_path: str | Path):
         wav, _ = librosa.load(ref_audio_path, sr=16000, mono=True)
@@ -351,7 +434,7 @@ class NeuTTS:
                 max_length=self.max_context,
                 eos_token_id=speech_end_id,
                 do_sample=True,
-                temperature=1.0,
+                temperature=0.5,
                 top_k=50,
                 use_cache=True,
                 min_new_tokens=50,
@@ -362,7 +445,48 @@ class NeuTTS:
         )
         return output_str
 
+    def _get_ggml_end_token_id(self) -> int:
+        end_ids = self.backbone.tokenize(b"<|SPEECH_GENERATION_END|>", special=True)
+        return end_ids[0]
+
+    def _estimate_min_tokens(self, input_text: str) -> int:
+        """Estimate minimum speech tokens from input text word count."""
+        word_count = len(input_text.split())
+        return max(self.min_new_tokens_floor, word_count * self.min_tokens_per_word)
+
+    def _ggml_token_stream(self, prompt: str, min_tokens: int) -> Generator[str, None, None]:
+        """Stream tokens from GGML backend, suppressing the end token for the first N tokens."""
+        end_token = "<|SPEECH_GENERATION_END|>"
+        end_id = self._get_ggml_end_token_id()
+
+        # Phase 1: generate min tokens with end token suppressed
+        accumulated = []
+        for item in self.backbone(
+            prompt,
+            max_tokens=min_tokens,
+            logit_bias={str(end_id): -100.0},
+            temperature=1.0,
+            top_k=50,
+            stream=True,
+        ):
+            text = item["choices"][0]["text"]
+            accumulated.append(text)
+            yield text
+
+        # Phase 2: continue with stop token allowed
+        continued_prompt = prompt + "".join(accumulated)
+        for item in self.backbone(
+            continued_prompt,
+            max_tokens=self.max_context,
+            temperature=1.0,
+            top_k=50,
+            stop=[end_token],
+            stream=True,
+        ):
+            yield item["choices"][0]["text"]
+
     def _infer_ggml(self, ref_codes: list[int], ref_text: str, input_text: str) -> str:
+        min_tokens = self._estimate_min_tokens(input_text)
         ref_text = self._to_phones(ref_text)
         input_text = self._to_phones(input_text)
 
@@ -371,19 +495,36 @@ class NeuTTS:
             f"user: Convert the text to speech:<|TEXT_PROMPT_START|>{ref_text} {input_text}"
             f"<|TEXT_PROMPT_END|>\nassistant:<|SPEECH_GENERATION_START|>{codes_str}"
         )
-        output = self.backbone(
+
+        end_token = "<|SPEECH_GENERATION_END|>"
+        end_id = self._get_ggml_end_token_id()
+
+        # Phase 1: generate min tokens with end token suppressed
+        output1 = self.backbone(
             prompt,
+            max_tokens=min_tokens,
+            logit_bias={str(end_id): -100.0},
+            temperature=1.0,
+            top_k=50,
+        )
+        text1 = output1["choices"][0]["text"]
+
+        # Phase 2: continue with stop token allowed
+        output2 = self.backbone(
+            prompt + text1,
             max_tokens=self.max_context,
             temperature=1.0,
             top_k=50,
-            stop=["<|SPEECH_GENERATION_END|>"],
+            stop=[end_token],
         )
-        output_str = output["choices"][0]["text"]
-        return output_str
+        text2 = output2["choices"][0]["text"]
+
+        return text1 + text2
 
     def _infer_stream_ggml(
         self, ref_codes: torch.Tensor, ref_text: str, input_text: str
     ) -> Generator[np.ndarray, None, None]:
+        raw_input_text = input_text
         ref_text = self._to_phones(ref_text)
         input_text = self._to_phones(input_text)
 
@@ -393,20 +534,13 @@ class NeuTTS:
             f"<|TEXT_PROMPT_END|>\nassistant:<|SPEECH_GENERATION_START|>{codes_str}"
         )
 
+        min_tokens = self._estimate_min_tokens(raw_input_text)
         audio_cache: list[np.ndarray] = []
         token_cache: list[str] = [f"<|speech_{idx}|>" for idx in ref_codes]
         n_decoded_samples: int = 0
         n_decoded_tokens: int = len(ref_codes)
 
-        for item in self.backbone(
-            prompt,
-            max_tokens=self.max_context,
-            temperature=1.0,
-            top_k=50,
-            stop=["<|SPEECH_GENERATION_END|>"],
-            stream=True,
-        ):
-            output_str = item["choices"][0]["text"]
+        for output_str in self._ggml_token_stream(prompt, min_tokens):
             token_cache.append(output_str)
 
             if (
