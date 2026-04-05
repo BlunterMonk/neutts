@@ -25,11 +25,16 @@ RUN pip install --no-cache-dir /wheels/core/*.whl \
     && pip install --no-cache-dir --no-deps /wheels/extras/*.whl \
     && rm -rf /wheels
 
-RUN mkdir -p /models /voices \
+COPY samples/*.pt /default-voices/
+
+RUN mkdir -p /models \
     && curl -L -o /models/neutts-air-Q4_0.gguf \
         https://huggingface.co/neuphonic/neutts-air-q4-gguf/resolve/main/neutts-air-Q4_0.gguf
 
 EXPOSE 9100
 
-ENTRYPOINT ["python", "-m", "neutts_server"]
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["--backbone", "/models/neutts-air-Q4_0.gguf", "--language", "en-us", "--host", "0.0.0.0", "--port", "9100", "--voices-dir", "/voices"]
