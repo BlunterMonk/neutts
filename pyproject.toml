@@ -30,4 +30,4 @@ all = ["llama-cpp-python", "onnxruntime"]
 
 [tool.scikit-build]
 # Include the espeak-ng-data directory that cmake copies into the package
-wheel.packages = ["neutts", "neuttsair"]
+wheel.packages = ["neutts", "neuttsair", "neutts_server"]
