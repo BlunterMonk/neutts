@@ -8,8 +8,8 @@ WORKDIR /build
 COPY . .
 
 RUN pip install --no-cache-dir scikit-build-core \
-    && pip wheel --no-cache-dir -w /wheels . \
-    && pip wheel --no-cache-dir -w /wheels \
+    && pip wheel --no-cache-dir -w /wheels/core . \
+    && pip wheel --no-cache-dir -w /wheels/extras \
         llama-cpp-python onnxruntime \
         fastapi "uvicorn[standard]" websockets python-multipart
 
@@ -21,7 +21,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /wheels /wheels
-RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
+RUN pip install --no-cache-dir /wheels/core/*.whl \
+    && pip install --no-cache-dir --no-deps /wheels/extras/*.whl \
+    && rm -rf /wheels
 
 RUN mkdir -p /models /voices \
     && curl -L -o /models/neutts-air-Q4_0.gguf \
