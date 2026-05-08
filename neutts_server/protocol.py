@@ -29,6 +29,11 @@ class HealthResponse(BaseModel):
     busy: bool
 
 
+class GenerateResponse(BaseModel):
+    duration_s: float
+    sample_rate: int
+
+
 class VoiceInfo(BaseModel):
     voice_id: str
     filename: str

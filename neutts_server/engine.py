@@ -103,6 +103,24 @@ class TTSEngine:
         return voices
 
     # ------------------------------------------------------------------
+    # Full (non-streaming) inference
+    # ------------------------------------------------------------------
+
+    async def submit_generate_job(
+        self, text: str, voice_id: str, ref_text: str
+    ) -> np.ndarray:
+        """Run full inference in the worker thread and return the complete waveform."""
+        if self._busy:
+            raise RuntimeError("Engine is busy with another request")
+
+        ref_codes = self.load_voice(voice_id)
+        loop = asyncio.get_running_loop()
+        wav = await loop.run_in_executor(
+            None, self._tts.infer, text, ref_codes, ref_text
+        )
+        return wav
+
+    # ------------------------------------------------------------------
     # Streaming inference
     # ------------------------------------------------------------------
 

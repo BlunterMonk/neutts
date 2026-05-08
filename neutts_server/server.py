@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import time
 from pathlib import Path
 
+import numpy as np
+import soundfile as sf
 from fastapi import FastAPI, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 
 from .engine import TTSEngine
 from .protocol import (
     DoneEvent,
     ErrorEvent,
+    GenerateResponse,
     HealthResponse,
     TTSRequest,
     VoiceEncodeResponse,
@@ -61,6 +66,36 @@ async def encode_voice(
         Path(tmp_path).unlink(missing_ok=True)
 
     return VoiceEncodeResponse(voice_id=voice_id)
+
+
+@app.post("/v1/tts/generate")
+async def tts_generate(req: TTSRequest) -> StreamingResponse:
+    """Run full (non-streaming) TTS and return a WAV file."""
+    try:
+        t_start = time.perf_counter()
+        wav = await engine.submit_generate_job(req.text, req.voice_id, req.ref_text)
+        duration_s = round(time.perf_counter() - t_start, 3)
+
+        buf = io.BytesIO()
+        sf.write(buf, wav, engine.sample_rate, format="WAV", subtype="PCM_16")
+        buf.seek(0)
+
+        return StreamingResponse(
+            buf,
+            media_type="audio/wav",
+            headers={
+                "X-Duration-S": str(duration_s),
+                "X-Sample-Rate": str(engine.sample_rate),
+            },
+        )
+    except FileNotFoundError as exc:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except RuntimeError as exc:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 @app.get("/v1/voices")
